@@ -48,7 +48,11 @@
   <button id="mic">🎤</button>
   <div id="status">タップして話してください</div>
   <div id="transcript"></div>
-  <div style="margin-top:32px;"><a href="#" id="reset" style="color:#666; font-size:12px;">設定をリセット</a></div>
+  <div style="margin-top:32px;">
+    <a href="#" id="restart" style="color:#666; font-size:12px;">会話を最初から</a>
+    &nbsp;|&nbsp;
+    <a href="#" id="reset" style="color:#666; font-size:12px;">設定をリセット</a>
+  </div>
 
   <script>
     // No secrets are stored in this file (it's public on GitHub Pages). On first visit,
@@ -83,6 +87,13 @@
       location.reload();
     });
 
+    document.getElementById('restart').addEventListener('click', (e) => {
+      e.preventDefault();
+      conversationHistory = [];
+      transcriptEl.textContent = '';
+      statusEl.textContent = 'タップして話してください';
+    });
+
     const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionImpl) {
       statusEl.textContent = 'このブラウザは音声認識に対応していません(Android版Chromeでお試しください)';
@@ -95,6 +106,7 @@
     let recognizing = false;
     let currentRecognition = null;
     let finalTranscript = '';
+    let conversationHistory = []; // Gemini {role, parts} entries; reset when a log completes
 
     micBtn.addEventListener('click', () => {
       if (!SpeechRecognitionImpl) return;
@@ -135,9 +147,9 @@
         if (text) {
           transcriptEl.textContent = '"' + text + '"';
           statusEl.textContent = '記録中...';
-          sendToBackend(text);
+          converse(text);
         } else {
-          statusEl.textContent = 'タップして話してください';
+          statusEl.textContent = conversationHistory.length ? '(タップして続きを話す)' : 'タップして話してください';
         }
       };
 
@@ -157,7 +169,9 @@
       recognition.start();
     });
 
-    function sendToBackend(text) {
+    function converse(text) {
+      conversationHistory.push({ role: 'user', parts: [{ text: text }] });
+
       const url = EXEC_URL + '?token=' + encodeURIComponent(TOKEN);
       fetch(url, {
         method: 'POST',
@@ -167,26 +181,40 @@
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: Date.now(),
-          method: 'log_from_text',
-          params: { text: text }
+          method: 'converse',
+          params: { history: conversationHistory }
         })
       })
         .then((res) => res.json())
         .then((data) => {
-          let message;
           if (data.error) {
-            message = 'エラー: ' + data.error.message;
-          } else {
-            const content = data.result && data.result.content;
-            message = (content && content[0] && content[0].text) || '記録しました。';
+            const message = 'エラー: ' + data.error.message;
+            statusEl.textContent = message;
+            speak(message);
+            conversationHistory = [];
+            return;
           }
-          statusEl.textContent = message;
+
+          const result = data.result;
+          const content = result && result.content;
+          const message = (content && content[0] && content[0].text) || '記録しました。';
+
+          if (result && result.done === false) {
+            // Gemini is asking a follow-up question; keep the conversation going.
+            conversationHistory = result.history || conversationHistory;
+            statusEl.textContent = message + '\n(タップして答える)';
+          } else {
+            // Logged (or a terminal error) — start fresh next time.
+            conversationHistory = [];
+            statusEl.textContent = message;
+          }
           speak(message);
         })
         .catch((err) => {
           const message = '通信エラー: ' + err.message;
           statusEl.textContent = message;
           speak(message);
+          conversationHistory = [];
         });
     }
 
