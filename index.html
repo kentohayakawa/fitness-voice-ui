@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>フィットネス記録</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      padding: 40px 16px;
+      background: #111;
+      color: #eee;
+    }
+    button#mic {
+      width: 160px;
+      height: 160px;
+      border-radius: 50%;
+      border: none;
+      background: #d33;
+      color: white;
+      font-size: 56px;
+      cursor: pointer;
+    }
+    button#mic.listening {
+      background: #3a3;
+    }
+    button#mic:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 24px;
+      font-size: 18px;
+      min-height: 4em;
+      white-space: pre-wrap;
+    }
+    #transcript {
+      margin-top: 12px;
+      color: #aaa;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h2>フィットネス記録</h2>
+  <button id="mic">🎤</button>
+  <div id="status">タップして話してください</div>
+  <div id="transcript"></div>
+  <div style="margin-top:32px;"><a href="#" id="reset" style="color:#666; font-size:12px;">設定をリセット</a></div>
+
+  <script>
+    // No secrets are stored in this file (it's public on GitHub Pages). On first visit,
+    // the user enters their own Apps Script Web App URL and shared token, which are then
+    // saved only in this browser's localStorage on this device.
+    function getOrPromptConfig() {
+      let execUrl = localStorage.getItem('fitnessExecUrl');
+      let token = localStorage.getItem('fitnessToken');
+      if (!execUrl) {
+        execUrl = window.prompt('Apps ScriptのWebアプリURL(.../exec)を入力してください:');
+        if (execUrl) localStorage.setItem('fitnessExecUrl', execUrl.trim());
+      }
+      if (!token) {
+        token = window.prompt('共有トークン(SHARED_TOKEN)を入力してください:');
+        if (token) localStorage.setItem('fitnessToken', token.trim());
+      }
+      return { execUrl: (execUrl || '').trim(), token: (token || '').trim() };
+    }
+
+    const config = getOrPromptConfig();
+    const EXEC_URL = config.execUrl;
+    const TOKEN = config.token;
+
+    const micBtn = document.getElementById('mic');
+    const statusEl = document.getElementById('status');
+    const transcriptEl = document.getElementById('transcript');
+
+    document.getElementById('reset').addEventListener('click', (e) => {
+      e.preventDefault();
+      localStorage.removeItem('fitnessExecUrl');
+      localStorage.removeItem('fitnessToken');
+      location.reload();
+    });
+
+    const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionImpl) {
+      statusEl.textContent = 'このブラウザは音声認識に対応していません(Android版Chromeでお試しください)';
+      micBtn.disabled = true;
+    } else if (!EXEC_URL || !TOKEN) {
+      statusEl.textContent = 'URLまたはトークンが未設定です。「設定をリセット」から再入力してください。';
+      micBtn.disabled = true;
+    }
+
+    let recognizing = false;
+
+    micBtn.addEventListener('click', () => {
+      if (recognizing || !SpeechRecognitionImpl) return;
+
+      const recognition = new SpeechRecognitionImpl();
+      recognition.lang = 'ja-JP';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = () => {
+        recognizing = true;
+        micBtn.classList.add('listening');
+        statusEl.textContent = '聞いています...';
+        transcriptEl.textContent = '';
+      };
+
+      recognition.onerror = (event) => {
+        recognizing = false;
+        micBtn.classList.remove('listening');
+        statusEl.textContent = 'エラー: ' + event.error;
+      };
+
+      recognition.onend = () => {
+        recognizing = false;
+        micBtn.classList.remove('listening');
+      };
+
+      recognition.onresult = (event) => {
+        const text = event.results[0][0].transcript;
+        transcriptEl.textContent = '"' + text + '"';
+        statusEl.textContent = '記録中...';
+        sendToBackend(text);
+      };
+
+      recognition.start();
+    });
+
+    function sendToBackend(text) {
+      const url = EXEC_URL + '?token=' + encodeURIComponent(TOKEN);
+      fetch(url, {
+        method: 'POST',
+        // text/plain avoids a CORS preflight (Apps Script Web Apps don't support one);
+        // the body is still valid JSON and is parsed as such on the server.
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'log_from_text',
+          params: { text: text }
+        })
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          let message;
+          if (data.error) {
+            message = 'エラー: ' + data.error.message;
+          } else {
+            const content = data.result && data.result.content;
+            message = (content && content[0] && content[0].text) || '記録しました。';
+          }
+          statusEl.textContent = message;
+          speak(message);
+        })
+        .catch((err) => {
+          const message = '通信エラー: ' + err.message;
+          statusEl.textContent = message;
+          speak(message);
+        });
+    }
+
+    function speak(text) {
+      if (!window.speechSynthesis) return;
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'ja-JP';
+      window.speechSynthesis.speak(utterance);
+    }
+  </script>
+</body>
+</html>
