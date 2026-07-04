@@ -93,23 +93,36 @@
     }
 
     let recognizing = false;
+    let currentRecognition = null;
+    let finalTranscript = '';
 
     micBtn.addEventListener('click', () => {
-      if (recognizing || !SpeechRecognitionImpl) return;
+      if (!SpeechRecognitionImpl) return;
+
+      if (recognizing) {
+        // Second tap: stop listening. onend will send whatever was captured.
+        currentRecognition.stop();
+        return;
+      }
 
       const recognition = new SpeechRecognitionImpl();
+      currentRecognition = recognition;
       recognition.lang = 'ja-JP';
-      recognition.interimResults = false;
+      recognition.interimResults = true;
+      recognition.continuous = true; // keep listening across pauses, don't cut off mid-sentence
       recognition.maxAlternatives = 1;
+
+      finalTranscript = '';
 
       recognition.onstart = () => {
         recognizing = true;
         micBtn.classList.add('listening');
-        statusEl.textContent = '聞いています...';
+        statusEl.textContent = '聞いています...(話し終わったらもう一度タップ)';
         transcriptEl.textContent = '';
       };
 
       recognition.onerror = (event) => {
+        if (event.error === 'no-speech') return;
         recognizing = false;
         micBtn.classList.remove('listening');
         statusEl.textContent = 'エラー: ' + event.error;
@@ -118,13 +131,27 @@
       recognition.onend = () => {
         recognizing = false;
         micBtn.classList.remove('listening');
+        const text = finalTranscript.trim();
+        if (text) {
+          transcriptEl.textContent = '"' + text + '"';
+          statusEl.textContent = '記録中...';
+          sendToBackend(text);
+        } else {
+          statusEl.textContent = 'タップして話してください';
+        }
       };
 
       recognition.onresult = (event) => {
-        const text = event.results[0][0].transcript;
-        transcriptEl.textContent = '"' + text + '"';
-        statusEl.textContent = '記録中...';
-        sendToBackend(text);
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+        transcriptEl.textContent = '"' + finalTranscript + interim + '"';
       };
 
       recognition.start();
